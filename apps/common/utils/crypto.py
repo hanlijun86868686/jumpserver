@@ -2,8 +2,27 @@ import base64
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from Crypto.Random import get_random_bytes
+from gmssl import sm2
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+
+
+class GMSM2Crypto:
+    def __init__(self, public_key, private_key):
+        self.sm2_crypt = sm2.CryptSM2(
+            public_key=public_key, private_key=private_key
+        )
+
+    def encrypt(self, text):
+        return base64.urlsafe_b64encode(
+            self.sm2_crypt.encrypt(bytes(text, encoding='utf8'))
+        ).decode('utf8')
+
+    def decrypt(self, text):
+        return self.sm2_crypt.decrypt(
+            base64.urlsafe_b64decode(bytes(text, encoding='utf8'))
+        ).decode('utf8')
 
 
 class AESCrypto:
@@ -110,5 +129,47 @@ def get_aes_crypto(key=None, mode='GCM'):
     return a
 
 
+def get_gm_sm2_crypto():
+    return GMSM2Crypto(
+        public_key=settings.SECURITY_CRYPTO_GM_SM2_PUBLIC_KEY,
+        private_key=settings.SECURITY_CRYPTO_GM_SM2_PRIVATE_KEY
+    )
+
+
 aes_ecb_crypto = get_aes_crypto(mode='ECB')
 aes_crypto = get_aes_crypto(mode='GCM')
+gm_sm2_crypto = get_gm_sm2_crypto()
+
+
+class Crypto:
+    methods = {
+        'aes_ecb': aes_ecb_crypto,
+        'aes': aes_crypto,
+        'gm_sm2': gm_sm2_crypto
+    }
+
+    def __init__(self):
+        methods = self.__class__.methods.copy()
+        method = methods.pop(settings.SECURITY_DATA_CRYPTO_METHOD, None)
+        if method is None:
+            raise ImproperlyConfigured(
+                f'{settings.SECURITY_DATA_CRYPTO_METHOD} crypto method not supported'
+            )
+        self.methods = [method, *methods.values()]
+
+    @property
+    def encryptor(self):
+        return self.methods[0]
+
+    def encrypt(self, text):
+        return self.encryptor.encrypt(text)
+
+    def decrypt(self, text):
+        for decryptor in self.methods:
+            try:
+                return decryptor.decrypt(text)
+            except (TypeError, ValueError, UnicodeDecodeError):
+                continue
+
+
+crypto = Crypto()
